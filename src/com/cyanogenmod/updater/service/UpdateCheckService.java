@@ -223,7 +223,9 @@ public class UpdateCheckService extends IntentService
         String updateUri = SystemProperties.get("cm.updater.uri");
         if (TextUtils.isEmpty(updateUri)) {
             updateUri = getString(R.string.conf_update_server_url_def);
-        }
+        } else {
+			return URI.create(updateUri);
+		}
 
         String incrementalVersion = SystemProperties.get("ro.build.version.incremental");
         updateUri += "/v1/" + Utils.getDeviceType() + "/" + getRomType() + "/" + incrementalVersion;
@@ -238,22 +240,51 @@ public class UpdateCheckService extends IntentService
         // Get the actual ROM Update Server URL
         URI updateServerUri = getServerURI();
         UpdatesJsonObjectRequest request;
-        request = new UpdatesJsonObjectRequest(updateServerUri.toASCIIString(),
-                Utils.getUserAgentString(this), null, this, this);
-        // Improve request error tolerance
-        request.setRetryPolicy(new DefaultRetryPolicy(UPDATE_REQUEST_TIMEOUT,
-                    UPDATE_REQUEST_MAX_RETRIES, DefaultRetryPolicy.DEFAULT_BACKOFF_MULT));
-        // Set the tag for the request, reuse logging tag
-        request.setTag(TAG);
+        try {
+		    request = new UpdatesJsonObjectRequest(updateServerUri.toASCIIString(),
+		            Utils.getUserAgentString(this), buildUpdateRequest(updateType), this, this);
+		    // Improve request error tolerance
+		    request.setRetryPolicy(new DefaultRetryPolicy(UPDATE_REQUEST_TIMEOUT,
+		                UPDATE_REQUEST_MAX_RETRIES, DefaultRetryPolicy.DEFAULT_BACKOFF_MULT));
+		    // Set the tag for the request, reuse logging tag
+		    request.setTag(TAG);
+ 		} catch (JSONException e) {
+            Log.e(TAG, "Could not build request", e);
+            return;
+        }
 
-        ((UpdateApplication) getApplicationContext()).getQueue().add(request);
+		((UpdateApplication) getApplicationContext()).getQueue().add(request);
+    }
+
+	private JSONObject buildUpdateRequest(int updateType) throws JSONException {
+        JSONArray channels = new JSONArray();
+
+        switch(updateType) {
+            case Constants.UPDATE_TYPE_SNAPSHOT:
+                channels.put("snapshot");
+                break;
+            case Constants.UPDATE_TYPE_NIGHTLY:
+            default:
+                channels.put("nightly");
+                break;
+        }
+        JSONObject params = new JSONObject();
+        params.put("device", Utils.getDeviceType());
+        params.put("channels", channels);
+        //params.put("source_incremental", Utils.getIncremental());
+
+        JSONObject request = new JSONObject();
+        request.put("method", "get_all_builds");
+        request.put("params", params);
+
+        return request;
     }
 
     private LinkedList<UpdateInfo> parseJSON(String jsonString, int updateType) {
         LinkedList<UpdateInfo> updates = new LinkedList<UpdateInfo>();
         try {
             JSONObject obj = new JSONObject(jsonString);
-            JSONArray updateList = obj.getJSONArray("response");
+            JSONArray updateList = obj.getJSONArray("result");
             int length = updateList.length();
 
             Log.d(TAG, "Got update JSON data with " + length + " entries");
@@ -278,9 +309,11 @@ public class UpdateCheckService extends IntentService
         UpdateInfo ui = new UpdateInfo.Builder()
                 .setFileName(obj.getString("filename"))
                 .setDownloadUrl(obj.getString("url"))
+				.setChangelogUrl(obj.getString("changes"))
+/*				.setMD5Sum(obj.getString("md5sum"))*/
                 .setApiLevel(Build.VERSION.SDK_INT) // TODO: remove this entirely
-                .setBuildDate(obj.getLong("datetime"))
-                .setType(obj.getString("romtype"))
+                .setBuildDate(obj.getLong("timestamp"))
+                .setType(obj.getString("channel"))
                 .build();
 
         if (!ui.isNewerThanInstalled()) {
